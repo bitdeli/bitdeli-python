@@ -1,0 +1,119 @@
+import os, sys, zlib, bencode, cStringIO, atexit, json
+from itertools import izip
+from struct import unpack
+
+MAX_MESSAGE_LENGTH = 1024 * 1024
+nonce = ''
+
+class OutputBuffer(object):
+    def __init__(self):
+        self.buffer = cStringIO.StringIO()
+        self.buffer.write('l')
+        self.size = 0
+
+    def add(self, e):
+        e = bencode.bencode(e)
+        if self.size + len(e) < MAX_MESSAGE_LENGTH:
+            self.size += len(e)
+            self.buffer.write(e)
+        else:
+            self.flush()
+            self.add(e)
+
+    def flush(self):
+        if self.size > 0:
+            self.buffer.write('e')
+            communicate('out', self.buffer.getvalue())
+            self.buffer.truncate(0)
+            self.buffer.write('l')
+            self.size = 0
+
+class Event(object):
+    __slots__ = ['object', 'event_id', 'timestamp', 'group_key', 'sort_key']
+
+    def __init__(self, input):
+        if isinstance(input, list):
+            self._init_sys(input)
+        else:
+            self._init_user(input)
+
+    def _init_sys(self, input):
+        for (field, value) in izip(self.__slots__, input):
+            setattr(self, field, value)
+
+    def _init_user(self, input):
+        for field in self.__slots__:
+            if field in input:
+                setattr(self, field, input)
+        if 'object' not in input:
+            self.object = input
+
+    def __getitem__(self, key):
+        return self.object[key]
+
+def flush_before_traceback(type, value, traceback):
+    output_buffer.flush()
+    sys.__excepthook__(type, value, traceback)
+
+sys.excepthook = flush_before_traceback
+
+def read_int():
+    buf = ''
+    for i in range(11):
+        buf += sys.stdin.read(1)
+        if buf[-1] == ' ':
+            return int(buf)
+    raise Exception("System error: Invalid length (%s)" % buf)
+
+def recv():
+    global nonce
+    nonce = sys.stdin.read(5)[:4]
+    return sys.stdin.read(read_int())
+
+def communicate(head, body='', benjson=False):
+    sys.stdout.write('%s %s %d %s\n' % (nonce, head, len(body), body))
+    reply = recv()
+    if reply:
+        return bencode.bdecode(reply, benjson)
+    else:
+        return ''
+
+def events():
+    while True:
+        input = communicate('next')
+        if len(input) > 0:
+            yield Event(input)
+        else:
+            break
+
+def output(item):
+    if isinstance(item, dict):
+        enc = json.dumps(item)
+        if len(enc) < MAX_MESSAGE_LENGTH:
+            output_buffer.add(bencode.BenJson(enc))
+        else:
+            raise Exception("Item too large! (%d > %d bytes)" %
+                            (len(benc), MAX_MESSAGE_LENGTH))
+    else:
+        raise Exception("Output accepts dictionaries only")
+
+def done():
+    return communicate('done')
+
+def ping():
+    return communicate('ping')
+
+def log(msg):
+    communicate('log', bencode.bencode(unicode(msg).encode('utf-8')))
+
+def init():
+    global output_buffer
+    output_buffer = OutputBuffer()
+    atexit.register(output_buffer.flush)
+    if 'TESTING' not in os.environ:
+        ret = recv()
+        if ret != '2:ok':
+            raise Exception("System error: Invalid initial reply (%s)" % ret)
+        ping()
+
+init()
