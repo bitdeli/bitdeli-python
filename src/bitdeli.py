@@ -1,9 +1,23 @@
+#
+# Bitdeli Python worker
+#
+# https://bitdeli.com
+#
+# Copyright (c) 2012 Bitdeli Inc
+#
+# See LICENSE for the full MIT license
+
 import os, sys, zlib, bencode, cStringIO, atexit, json
 from itertools import izip
 from struct import unpack
 
+SYS_FIELDS = ['object', 'event_id', 'timestamp', 'group_key', 'sort_key']
 MAX_MESSAGE_LENGTH = 1024 * 1024
 nonce = ''
+
+class LogWriter(object):
+    def write(self, string):
+        log(string)
 
 class OutputBuffer(object):
     def __init__(self):
@@ -28,34 +42,27 @@ class OutputBuffer(object):
             self.buffer.write('l')
             self.size = 0
 
-class Event(object):
-    __slots__ = ['object', 'event_id', 'timestamp', 'group_key', 'sort_key']
-
+class Event(dict):
     def __init__(self, input):
+        super(Event, self).__init__()
         if isinstance(input, list):
             self._init_sys(input)
         else:
             self._init_user(input)
 
     def _init_sys(self, input):
-        for (field, value) in izip(self.__slots__, input):
+        self.update(input[0])
+        for (field, value) in izip(SYS_FIELDS[1:], input[1:]):
             setattr(self, field, value)
 
     def _init_user(self, input):
-        for field in self.__slots__:
+        for field in SYS_FIELDS[1:]:
             if field in input:
                 setattr(self, field, input)
-        if 'object' not in input:
-            self.object = input
-
-    def __getitem__(self, key):
-        return self.object[key]
-
-def flush_before_traceback(type, value, traceback):
-    output_buffer.flush()
-    sys.__excepthook__(type, value, traceback)
-
-sys.excepthook = flush_before_traceback
+        if 'object' in input:
+            self.update(input['object'])
+        else:
+            self.update(input)
 
 def read_int():
     buf = ''
@@ -71,7 +78,7 @@ def recv():
     return sys.stdin.read(read_int())
 
 def communicate(head, body='', benjson=False):
-    sys.stdout.write('%s %s %d %s\n' % (nonce, head, len(body), body))
+    sys.__stdout__.write('%s %s %d %s\n' % (nonce, head, len(body), body))
     reply = recv()
     if reply:
         return bencode.bdecode(reply, benjson)
@@ -106,9 +113,15 @@ def ping():
 def log(msg):
     communicate('log', bencode.bencode(unicode(msg).encode('utf-8')))
 
+def flush_before_traceback(type, value, traceback):
+    output_buffer.flush()
+    sys.__excepthook__(type, value, traceback)
+
 def init():
     global output_buffer
+    sys.stdout = LogWriter()
     output_buffer = OutputBuffer()
+    sys.excepthook = flush_before_traceback
     atexit.register(output_buffer.flush)
     if 'TESTING' not in os.environ:
         ret = recv()
