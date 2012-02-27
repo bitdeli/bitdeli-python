@@ -17,7 +17,7 @@ nonce = ''
 
 class LogWriter(object):
     def write(self, string):
-        log(string)
+        log(string.strip())
 
 class OutputBuffer(object):
     def __init__(self):
